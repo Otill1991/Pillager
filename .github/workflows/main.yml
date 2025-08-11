@@ -12,23 +12,16 @@ jobs:
       matrix:
         configuration: [Release]
 
-    runs-on: windows-2019
+    runs-on: windows-2022
 
     steps:
     - name: Checkout
-      uses: actions/checkout@main
+      uses: actions/checkout@v4
       with:
         fetch-depth: 0
     
-    - name: Checkout private donut
-      uses: actions/checkout@v3
-      with:
-        repository: qwqdanchun/donut-self
-        token: ${{ secrets.PERSONAL_TOKEN }}
-        path: donut
-
     - name: Setup MSBuild
-      uses: microsoft/setup-msbuild@v1.0.2
+      uses: microsoft/setup-msbuild@v1.1
 
     - name: Install NuGet Packages
       run: nuget restore Pillager.sln
@@ -36,11 +29,35 @@ jobs:
     - name: Build solution
       run: msbuild -nologo -v:m -p:Configuration=${{ matrix.configuration }} Pillager.sln
       
-    - name: Build Shellcode
-      shell: powershell
-      run: .\donut\donut.exe -z 3 -i .\Pillager\bin\Release\Pillager.exe -o .\Pillager.bin
-      
-    - name: Delete-tag-and-release
+    - name: Patch Runtime Version to v4.0.30319
+      shell: pwsh
+      run: |
+        $exePath = "./Pillager/bin/Release/Pillager.exe"
+        $ilPath = "./Pillager/bin/Release/Pillager.il"
+        $newIlPath = "./Pillager/bin/Release/Pillager_new.il"
+        $resPath = "./Pillager/bin/Release/Pillager.res"
+
+        # Setup Visual Studio Developer Environment
+        $vswhere = "C:\Program Files (x86)\Microsoft Visual Studio\Installer\vswhere.exe"
+        $vsPath = & $vswhere -latest -property installationPath
+        Import-Module "$vsPath\Common7\Tools\Microsoft.VisualStudio.DevShell.dll"
+        Enter-VsDevShell -VsInstallPath $vsPath -SkipAutomaticLocation
+
+        echo "Disassembling $exePath..."
+        ildasm $exePath /out=$ilPath
+
+        echo "Patching IL file to target .NET Runtime v4.0.30319..."
+        (Get-Content $ilPath) -replace 'RuntimeVersion "v2.0.50727"', 'RuntimeVersion "v4.0.30319"' | Set-Content $newIlPath
+
+        echo "Reassembling executable..."
+        if (Test-Path $resPath) {
+          ilasm $newIlPath /output=$exePath /resource=$resPath /quiet
+        } else {
+          ilasm $newIlPath /output=$exePath /quiet
+        }
+        echo "Patching complete."
+
+    - name: Delete old tag and release
       uses: dev-drprasad/delete-tag-and-release@v0.2.1
       with:
         delete_release: true
@@ -50,18 +67,17 @@ jobs:
     
     - name: Create Release
       id: create_release
-      uses: actions/create-release@latest
+      uses: actions/create-release@v1
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       with:
         tag_name: AutoBuild
         release_name: AutoBuild
-        body: ${{ steps.changelog.outputs.changelog }}
+        body: "Automated build"
         draft: false
         prerelease: false
         
     - name: Upload Release Exe
-      id: upload-release-exe 
       uses: actions/upload-release-asset@v1
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -69,37 +85,4 @@ jobs:
         upload_url: ${{ steps.create_release.outputs.upload_url }}
         asset_path: ./Pillager/bin/Release/Pillager.exe
         asset_name: Pillager.exe
-        asset_content_type: application/exe
-        
-    - name: Upload Release Bin
-      id: upload-release-bin 
-      uses: actions/upload-release-asset@v1
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      with:
-        upload_url: ${{ steps.create_release.outputs.upload_url }}
-        asset_path: ./Pillager.bin
-        asset_name: Pillager.bin
-        asset_content_type: application/octet-stream
-
-    - name: Install 7Zip PowerShell Module
-      shell: powershell
-      run: Install-Module 7Zip4PowerShell -Force -Verbose
-
-    - name: Copy Pillager.bin
-      run: copy .\Pillager.bin .\cs-plugin\module\Pillager.bin
-
-    - name: Pack Plugin Folder
-      shell: powershell
-      run: Compress-7Zip "cs-plugin" -ArchiveFileName "cs-plugin.zip" -Format Zip
-
-    - name: Upload Plugin Zip
-      id: upload-plugin-zip 
-      uses: actions/upload-release-asset@v1
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      with:
-        upload_url: ${{ steps.create_release.outputs.upload_url }}
-        asset_path: ./cs-plugin.zip
-        asset_name: cs-plugin.zip
-        asset_content_type: application/octet-stream
+        asset_content_type: application/vnd.microsoft.portable-executable

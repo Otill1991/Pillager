@@ -86,3 +86,4 @@ jobs:
         asset_path: ./Pillager/bin/Release/Pillager.exe
         asset_name: Pillager.exe
         asset_content_type: application/vnd.microsoft.portable-executable
+        
